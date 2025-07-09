@@ -1,4 +1,4 @@
-# /mount/src/data/app.py
+# /mount/src/capitaline/app.py
 
 """
 Frontend Streamlit Dashboard - User Interface for Financial Analysis
@@ -11,13 +11,13 @@ import numpy as np
 import plotly.express as px
 from typing import List, Dict, Any, Optional
 
-# Import the robust backend engine for the 'Live Data' mode
-from financial_engine import (
-    get_stock_analysis,
-    validate_symbol,
-    clear_cache,
-    get_cache_stats
-)
+# Try to import backend; handle error gracefully if it's missing
+try:
+    from financial_engine import get_stock_analysis, validate_symbol
+except ImportError:
+    st.error("Warning: `financial_engine.py` not found. Live Data mode will not be available.")
+    get_stock_analysis = None
+    validate_symbol = None
 
 # Configure Streamlit page
 st.set_page_config(
@@ -28,7 +28,14 @@ st.set_page_config(
 )
 
 # Custom CSS
-st.markdown("""<style>/* ... your CSS ... */</style>""", unsafe_allow_html=True)
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 3rem; font-weight: bold; color: #1f77b4; text-align: center;
+        margin-bottom: 2rem; text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+    }
+</style>
+""", unsafe_allow_html=True)
 
 
 def _style_selected_rows(row: pd.Series, selected_rows: List[str]) -> List[str]:
@@ -37,110 +44,97 @@ def _style_selected_rows(row: pd.Series, selected_rows: List[str]) -> List[str]:
     return [highlight_style if row.name in selected_rows else '' for _ in row]
 
 
-# --- NEW: Function to parse the uploaded Capitaline Excel file ---
 def parse_capitaline_file(uploaded_file) -> Optional[Dict[str, pd.DataFrame]]:
     """
     Parses an uploaded Capitaline .xls file and transforms it into the
     app's expected data structure.
-    
-    This function assumes the Excel file has:
-    - Financial metrics in the first column (e.g., 'Net Sales', 'Net Profit').
-    - Years as subsequent column headers (e.g., 'Mar 2023', 'Mar 2022').
     """
     if uploaded_file is None:
         return None
 
     try:
-        # Use the 'xlrd' engine for old .xls files
-        st.info(f"Reading data from uploaded file: `{uploaded_file.name}`")
-        # We assume the data is on the first sheet. If not, add sheet_name='SheetName'
+        st.info(f"Reading data from: `{uploaded_file.name}`")
         df = pd.read_excel(uploaded_file, engine='xlrd')
 
-        # --- Data Cleaning and Structuring ---
-        # 1. Identify the metric column (usually the first one) and set it as the index.
-        #    We drop any rows where the metric name is missing.
         metric_col = df.columns[0]
-        df = df.dropna(subset=[metric_col])
-        df = df.set_index(metric_col)
+        df = df.dropna(subset=[metric_col]).set_index(metric_col)
 
-        # 2. Clean up year columns: Convert 'Mar 2023' to '2023'
-        #    This makes them numeric and easier to sort.
         renamed_cols = {}
         for col in df.columns:
-            # Try to extract a 4-digit year from the column name
-            match = pd.to_numeric(str(col), errors='coerce')
-            if pd.notna(match) and 1900 < match < 2100:
-                 renamed_cols[col] = str(int(match))
-            elif isinstance(col, str) and " " in col:
-                # Fallback for 'Mar 2023' format
-                try:
-                    year_str = col.split(" ")[-1]
-                    if len(year_str) == 4:
-                        renamed_cols[col] = year_str
-                except:
-                    pass # Ignore columns that don't fit the format
-
+            try:
+                # Extracts the last 4-digit number from a string like 'Mar 2023'
+                year_str = ''.join(filter(str.isdigit, str(col)))[-4:]
+                if year_str:
+                    renamed_cols[col] = year_str
+            except IndexError:
+                continue
+        
         df = df.rename(columns=renamed_cols)
-
-        # 3. Filter to keep only columns that look like years
-        year_columns = [col for col in df.columns if col.isdigit() and len(col) == 4]
+        
+        year_columns = sorted([col for col in df.columns if col.isdigit() and len(col) == 4], reverse=True)
         if not year_columns:
-            st.error("Could not find year columns in the uploaded file. Please ensure years (e.g., 2023, 2022) are in the header.")
+            st.error("Could not find year columns (e.g., 2023, 2022) in the file's header.")
             return None
         
-        df = df[sorted(year_columns, reverse=True)] # Sort from most recent to oldest
+        df = df[year_columns].apply(pd.to_numeric, errors='coerce')
         
-        # 4. Convert all data to numeric, coercing errors to NaN
-        df = df.apply(pd.to_numeric, errors='coerce')
-
         st.success("File processed successfully!")
-        
-        # We'll return the data structured as a single statement for simplicity
         return {"capitaline_statement": df}
 
     except Exception as e:
-        st.error(f"Error parsing the Excel file: {e}")
-        st.warning("Please ensure the file is a standard financial report with metrics in the first column and years in the header.")
+        st.error(f"Error parsing Excel file: {e}")
         return None
 
 
+# IMPORTANT: All methods below must be correctly indented to be part of the class.
 class DashboardUI:
-    # ... (__init__, initialize_session_state, render_header are the same) ...
-    
+    """The main class for the Streamlit user interface."""
+
+    def __init__(self):
+        """Initializes the UI class and sets up the session state."""
+        # Initialize session state keys to avoid errors on the first run
+        if "analysis_data" not in st.session_state:
+            st.session_state.analysis_data = None
+        if "active_source" not in st.session_state:
+            st.session_state.active_source = "capitaline" # Default to file upload
+        if "user_symbol_input" not in st.session_state:
+            st.session_state.user_symbol_input = "RELIANCE.NS"
+
+    def render_header(self):
+        """Renders the main title header for the application."""
+        st.markdown('<div class="main-header">📈 Financial Analysis Dashboard</div>', unsafe_allow_html=True)
+        st.markdown("---")
+
     def render_sidebar(self):
-        """Render the sidebar with a data source selector."""
+        """Renders the sidebar controls and returns the user's selections."""
         with st.sidebar:
-            st.header("🎛️ Dashboard Controls")
+            st.header("🎛️ Controls")
             
             data_source = st.radio(
                 "Select Data Source",
-                ["Live Data (Yahoo Finance)", "Local File (Capitaline)"],
+                ["Local File (Capitaline)", "Live Data (Yahoo Finance)"],
                 key="data_source_selector",
-                help="Choose a data source."
+                on_change=lambda: st.session_state.update(analysis_data=None) # Clear data when switching source
             )
             
-            # --- Conditional UI based on data source ---
-            if st.session_state.data_source_selector == "Local File (Capitaline)":
+            # --- Return a dictionary of controls based on the selected source ---
+            if data_source == "Local File (Capitaline)":
                 st.subheader("Capitaline File Upload")
-                uploaded_file = st.file_uploader(
-                    "Upload .xls financial data file",
-                    type=['xls']
-                )
+                uploaded_file = st.file_uploader("Upload .xls financial data file", type=['xls'])
                 return {"source": "capitaline", "file": uploaded_file}
-
+            
             else: # Yahoo Finance is selected
-                st.subheader("Stock Selection (Yahoo Finance)")
-                symbol_input_from_user = st.text_input(
-                    "Enter Stock Symbol:",
-                    value=st.session_state.user_symbol_input,
-                )
-                st.session_state.user_symbol_input = symbol_input_from_user
+                if not get_stock_analysis: # Check if import failed
+                    st.error("Live Data mode is disabled because `financial_engine.py` was not found.")
+                    return {"source": "yfinance", "fetch": False, "symbol": ""}
                 
-                hist_period = st.selectbox("Historical Period", ["1d", "5d", "1mo", "6mo", "1y", "5y", "max"], index=4)
-                fetch_data = st.button("🔍 Fetch Live Data", use_container_width=True, type="primary")
-                return {"source": "yfinance", "symbol": symbol_input_from_user, "period": hist_period, "fetch": fetch_data}
+                st.subheader("Stock Selection")
+                symbol = st.text_input("Enter Stock Symbol (e.g., INFY.NS)", value=st.session_state.user_symbol_input)
+                st.session_state.user_symbol_input = symbol # Remember the last typed symbol
+                
+                fetch = st.button("🔍 Fetch Live Data", use_container_width=True, type="primary")
+                return {"source": "yfinance", "fetch": fetch, "symbol": symbol}
 
-    # This method is now generalized to plot any DataFrame with the right structure
     def plot_selected_rows(self, df: pd.DataFrame, selected_rows: List[str], title: str):
         """Plots multiple selected rows from a DataFrame on a single chart."""
         if not selected_rows:
@@ -149,106 +143,74 @@ class DashboardUI:
         plot_df = df.loc[selected_rows].dropna(axis=1, how='all').T
         plot_df.index = plot_df.index.astype(str)
 
-        chart_prefs = st.session_state.get('chart_preferences', {'chart_type': 'line', 'theme': 'plotly_white'})
-        chart_type = chart_prefs.get('chart_type', 'line')
-        theme = chart_prefs.get('theme', 'plotly_white')
-
         st.markdown("---")
-        st.subheader(f"📊 Chart for Selected Rows in {title}")
-
-        if chart_type == 'bar':
-            fig = px.bar(plot_df, x=plot_df.index, y=plot_df.columns, title=f"Comparison: {', '.join(selected_rows)}", barmode='group')
-        else:
-            fig = px.line(plot_df, x=plot_df.index, y=plot_df.columns, title=f"Trend Analysis: {', '.join(selected_rows)}", markers=True)
-
-        fig.update_layout(xaxis_title="Period", yaxis_title="Amount", legend_title="Metrics", template=theme)
+        st.subheader(f"📊 Chart for: {', '.join(selected_rows)}")
+        fig = px.line(plot_df, x=plot_df.index, y=plot_df.columns, title=f"Trend Analysis", markers=True)
+        fig.update_layout(xaxis_title="Period", yaxis_title="Amount", legend_title="Metrics")
         st.plotly_chart(fig, use_container_width=True)
 
-    def display_data_from_file(self, analysis_data):
-        """Displays the parsed data from the Capitaline file."""
+    def display_capitaline_data(self, analysis_data: Dict[str, pd.DataFrame]):
+        """Renders the UI for the parsed Capitaline data."""
         st.header("Capitaline Data Analysis")
-        st.info("Displaying data from the uploaded Excel file.")
+        st.info("Displaying data from the uploaded Excel file. Select rows to visualize.")
         
-        # The parsed data is in the 'capitaline_statement' key
         statement_df = analysis_data.get("capitaline_statement")
         
         if statement_df is not None and not statement_df.empty:
-            st.markdown(f"**Select rows from the table below to visualize them.**")
             selected_rows = st.multiselect(
-                f"Select rows to chart:",
+                "Select metrics to chart:",
                 options=statement_df.index.tolist(),
                 key="capitaline_multiselect"
             )
-
-            styled_df = statement_df.style.format("{:,.2f}", na_rep="N/A")
+            styled_df = statement_df.style.format("{:,.2f}", na_rep="-")
             if selected_rows:
                 styled_df = styled_df.apply(_style_selected_rows, selected_rows=selected_rows, axis=1)
             
             st.dataframe(styled_df, use_container_width=True)
             self.plot_selected_rows(statement_df, selected_rows, "Uploaded Data")
-        else:
-            st.error("The processed data frame is empty.")
 
-    def display_data_from_yfinance(self, analysis_data):
-        """The existing display logic for Yahoo Finance data."""
-        # This function contains your previous tabbed layout for yfinance
-        tab1, tab2 = st.tabs(["📊 Overview", "📈 Statements & Ratios"])
-        # ... (This logic is the same as your last working yfinance version) ...
+    def display_yfinance_data(self, analysis_data: Dict[str, Any]):
+        """Renders the UI for data fetched from Yahoo Finance."""
+        st.header(f"Live Data Analysis: {st.session_state.user_symbol_input}")
+        # This is where you would build out the more complex tabbed view for yfinance data
+        # For now, we'll keep it simple and show the raw data.
+        st.json(analysis_data, expanded=False)
+        st.warning("Display for live data is simplified. You can build out the tabbed interface here.")
 
     def run(self):
-        """Main method to run the dashboard application."""
+        """The main execution loop for the Streamlit app."""
         self.render_header()
-        
-        # Get controls from the sidebar
         controls = self.render_sidebar()
 
-        if controls["source"] == "capitaline":
-            # If a file is uploaded, parse it and store it in session state
-            if controls["file"]:
-                analysis_data = parse_capitaline_file(controls["file"])
-                if analysis_data:
-                    st.session_state.analysis_data = analysis_data
-                    st.session_state.active_source = "capitaline"
-
-        elif controls["source"] == "yfinance":
-            # Existing yfinance fetch logic
-            symbol_input = controls["symbol"]
-            needs_fetch = (controls["fetch"] or (symbol_input and symbol_input != st.session_state.current_symbol))
-            if needs_fetch and symbol_input:
-                is_valid, formatted_symbol = validate_symbol(symbol_input)
+        # --- Data Loading Logic ---
+        if controls["source"] == "capitaline" and controls["file"]:
+            # If a new file is uploaded, parse it.
+            if controls["file"] != st.session_state.get("_uploaded_file_memo"):
+                st.session_state._uploaded_file_memo = controls["file"]
+                st.session_state.analysis_data = parse_capitaline_file(controls["file"])
+                st.session_state.active_source = "capitaline"
+        
+        elif controls["source"] == "yfinance" and controls["fetch"]:
+            # If fetch button is clicked for a valid symbol
+            if controls["symbol"] and validate_symbol:
+                is_valid, formatted_symbol = validate_symbol(controls["symbol"])
                 if is_valid:
                     with st.spinner(f"Fetching data for {formatted_symbol}..."):
-                        st.session_state.analysis_data = get_stock_analysis(formatted_symbol, period=controls["period"])
-                        st.session_state.current_symbol = formatted_symbol
+                        st.session_state.analysis_data = get_stock_analysis(formatted_symbol)
                         st.session_state.active_source = "yfinance"
+                else:
+                    st.error(f"Invalid symbol format: {controls['symbol']}")
 
-        # --- Main Display Logic ---
-        # Render content based on which data source is active
-        if st.session_state.get("analysis_data"):
-            if st.session_state.get("active_source") == "capitaline":
-                self.display_data_from_file(st.session_state.analysis_data)
-            elif st.session_state.get("active_source") == "yfinance":
-                # For simplicity, we can reuse the file display logic if it's general enough,
-                # or call a dedicated yfinance display function.
-                # Let's assume you have a function `display_data_from_yfinance`
-                 st.write("Displaying Yahoo Finance Data (placeholder)")
-                 # self.display_data_from_yfinance(st.session_state.analysis_data)
-            else:
-                 st.info("Please select a data source and fetch or upload data.")
+        # --- Data Display Logic ---
+        if st.session_state.analysis_data:
+            if st.session_state.active_source == "capitaline":
+                self.display_capitaline_data(st.session_state.analysis_data)
+            elif st.session_state.active_source == "yfinance":
+                self.display_yfinance_data(st.session_state.analysis_data)
         else:
             st.info("Welcome! Please select a data source from the sidebar to begin.")
 
 
 if __name__ == "__main__":
     ui = DashboardUI()
-    # Initialize session state keys to avoid errors on first run
-    if "analysis_data" not in st.session_state:
-        st.session_state.analysis_data = None
-    if "active_source" not in st.session_state:
-        st.session_state.active_source = None
-    if "current_symbol" not in st.session_state:
-        st.session_state.current_symbol = None
-    if "user_symbol_input" not in st.session_state:
-        st.session_state.user_symbol_input = "AAPL"
-        
     ui.run()
