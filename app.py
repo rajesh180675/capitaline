@@ -1,21 +1,20 @@
-# /mount/src/capitaline/app.py - FINAL CORRECTED VERSION
+# /mount/src/capitaline/app.py - FINAL STABLE VERSION
 
 """
 Frontend Streamlit Dashboard - User Interface for Financial Analysis
-Features a high-performance "Select and Chart" workflow using native components.
+Features a high-performance and stable "Select and Chart" workflow.
 """
 
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.express as px
 from typing import List, Dict, Any, Optional
 import io
 
 # Configure Streamlit page
 st.set_page_config(
-    page_title="High-Performance Financial Dashboard",
-    page_icon="⚡",
+    page_title="Stable Financial Dashboard",
+    page_icon="✅",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -91,7 +90,7 @@ class DashboardUI:
 
     def render_header(self):
         """Renders the main title header for the application."""
-        st.markdown('<div class="main-header">⚡ High-Performance Financial Dashboard</div>', unsafe_allow_html=True)
+        st.markdown('<div class="main-header">✅ Stable Financial Dashboard</div>', unsafe_allow_html=True)
         st.markdown("---")
 
     def render_sidebar(self):
@@ -120,55 +119,54 @@ class DashboardUI:
         fig.update_layout(xaxis_title="Year", yaxis_title="Amount (in Rs. Cr.)", legend_title="Metrics")
         return fig
 
-    # --- CORRECTED: This function now correctly implements row selection ---
+    # --- REWRITTEN: This function now uses the simple and stable st.multiselect pattern ---
     def display_capitaline_data(self, analysis_data: Dict[str, Any]):
-        """Renders the UI for the parsed Capitaline data using st.data_editor."""
+        """Renders the UI for the parsed Capitaline data."""
         company_name = analysis_data.get("company_name", "Uploaded Data")
         statement_df = analysis_data.get("statement")
         
         st.header(f"Analysis for: {company_name}")
-        st.info("Use the checkboxes in the 'Select' column to choose rows, then click the 'Generate Chart' button.")
         
         if statement_df is not None and not statement_df.empty:
             
-            # --- CRITICAL FIX: Add a 'Select' column BEFORE passing to the editor ---
-            df_to_edit = statement_df.reset_index()
-            df_to_edit.insert(0, "Select", False) # Insert a column of False booleans at the beginning
-            
-            # --- Display the Data Editor ---
-            edited_df = st.data_editor(
-                df_to_edit,
-                key="data_editor",
-                # Configure the new 'Select' column as a checkbox column
-                column_config={
-                    "Select": st.column_config.CheckboxColumn(required=True),
-                    "Metric": st.column_config.TextColumn(width="large")
-                },
-                # Disable editing for all data columns
-                disabled=df_to_edit.columns.drop("Select"), 
-                hide_index=True
-            )
-            
-            # --- CRITICAL FIX: Correctly identify selected rows ---
-            selected_rows = edited_df[edited_df["Select"] == True]["Metric"].tolist()
+            st.info("Select metrics from the dropdown below, then click 'Generate Chart'.")
 
+            # --- Charting Controls ---
+            # Use columns for a clean layout
+            col1, col2, col3 = st.columns([2, 1, 1])
+            with col1:
+                # The stable multiselect box
+                selected_rows = st.multiselect(
+                    "Select metrics to chart:",
+                    options=statement_df.index.tolist(),
+                    key="metric_selector"
+                )
+            with col2:
+                chart_type = st.radio("Chart Type", ["Line Chart", "Bar Chart"], horizontal=True, key="chart_type_selector")
+            
+            with col3:
+                # The button is disabled if no rows are selected, providing clear UI feedback
+                generate = st.button("📊 Generate Chart", type="primary", use_container_width=True, disabled=(not selected_rows))
+
+            if generate:
+                # When the button is clicked, generate the chart and save it to the session
+                fig = self.generate_chart(statement_df, selected_rows, chart_type)
+                st.session_state.chart_figure = fig
+            
+            # --- Data Table Display ---
             st.markdown("---")
-            
-            if selected_rows:
-                col1, col2 = st.columns([1, 3])
-                with col1:
-                    chart_type = st.radio("Select Chart Type", ["Line Chart", "Bar Chart"], horizontal=True)
-                with col2:
-                    if st.button("📊 Generate Chart", type="primary", use_container_width=True):
-                        fig = self.generate_chart(statement_df, selected_rows, chart_type)
-                        st.session_state.chart_figure = fig
-            else:
-                st.session_state.chart_figure = None
+            st.subheader("Financial Data")
+            st.dataframe(statement_df.style.format("{:,.2f}", na_rep="-"), use_container_width=True)
 
-        if st.session_state.chart_figure:
-            st.plotly_chart(st.session_state.chart_figure, use_container_width=True)
-        elif selected_rows:
-            st.info("Click the 'Generate Chart' button to visualize your selection.")
+            # --- Chart Display ---
+            # The chart persists across reruns until a new one is generated or the file changes
+            if st.session_state.chart_figure:
+                st.markdown("---")
+                st.subheader("Chart")
+                st.plotly_chart(st.session_state.chart_figure, use_container_width=True)
+        else:
+            st.error("The processed DataFrame is empty.")
+
 
     def run(self):
         """The main execution loop for the Streamlit app."""
@@ -180,12 +178,14 @@ class DashboardUI:
                 with st.spinner("Processing file..."):
                     st.session_state._uploaded_file_memo = controls["file"]
                     st.session_state.analysis_data = parse_capitaline_file(controls["file"])
+                    # Clear old chart when a new file is uploaded
                     st.session_state.chart_figure = None
         
         if st.session_state.analysis_data:
             self.display_capitaline_data(st.session_state.analysis_data)
         else:
             st.info("Welcome! Please upload a Capitaline .xls file using the sidebar to begin your analysis.")
+
 
 if __name__ == "__main__":
     ui = DashboardUI()
