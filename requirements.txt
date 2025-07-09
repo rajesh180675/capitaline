@@ -1,0 +1,12 @@
+streamlit
+pandas
+numpy
+matplotlib
+seaborn
+yfinance
+beautifulsoup4
+requests
+lxml
+streamlit-aggrid
+plotly
+xlrd
