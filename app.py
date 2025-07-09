@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 from typing import List, Dict, Any, Optional
-# NEW: Import BeautifulSoup for HTML parsing
+# Import BeautifulSoup for HTML parsing
 from bs4 import BeautifulSoup
 
 # Try to import backend; handle error gracefully if it's missing
@@ -39,71 +39,84 @@ def _style_selected_rows(row: pd.Series, selected_rows: List[str]) -> List[str]:
     return [highlight_style if row.name in selected_rows else '' for _ in row]
 
 
-# --- REWRITTEN: Function to parse the uploaded HTML file ---
+# --- REWRITTEN (AGAIN): More Robust HTML Parsing Function ---
 def parse_capitaline_file(uploaded_file) -> Optional[Dict[str, pd.DataFrame]]:
     """
-    Parses an uploaded Capitaline file, which is an HTML table saved with a .xls extension.
+    Parses an uploaded Capitaline file (HTML disguised as .xls) more robustly.
     """
     if uploaded_file is None:
         return None
 
     try:
         st.info(f"Reading HTML data from: `{uploaded_file.name}`")
-        # Read the file's content directly as a string (HTML)
-        html_content = uploaded_file.getvalue().decode("utf-8")
-
-        # Use Pandas' powerful read_html which finds all tables in an HTML string.
-        # It returns a list of DataFrames. The main data table is usually the first or largest one.
+        html_content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
         tables = pd.read_html(html_content)
         
         if not tables:
             st.error("No data tables were found in the uploaded file.")
             return None
 
-        # Assume the largest table is the one we want
-        df = max(tables, key=len)
+        df = max(tables, key=lambda x: x.shape[0] * x.shape[1]) # Find the table with the most cells
 
-        # --- Data Cleaning and Structuring (same logic as before) ---
-        # 1. The first column is usually the metric, and it becomes the header after read_html.
-        #    We need to find it and set it as the index.
-        df = df.rename(columns={0: 'Metric'}).dropna(subset=['Metric']).set_index('Metric')
+        # --- Robust Data Cleaning and Structuring ---
+        
+        # 1. Identify and set the index column (financial metrics).
+        # This is almost always the first column.
+        metric_col_name = df.columns[0]
+        df = df.rename(columns={metric_col_name: 'Metric'})
+        df = df.dropna(subset=['Metric'])
+        
+        # 2. Find the row that contains the years to use as the header.
+        # It's usually the first row with a year-like value.
+        header_row_index = -1
+        for i, row in df.iterrows():
+            # Check if any cell in the row contains a year-like string (e.g., 'Mar 23', '2022')
+            if any('20' in str(cell) or '22' in str(cell) or '23' in str(cell) for cell in row):
+                header_row_index = i
+                break
+        
+        if header_row_index == -1:
+            st.error("Could not automatically detect the header row with years in the file.")
+            return None
 
-        # 2. The column headers are now the first row of data. Promote them.
-        df.columns = df.iloc[0]
-        df = df.drop(df.index[0])
-        df = df.reset_index() # Reset index to work with the 'Metric' column again
-        
-        # 3. Clean up the now-promoted header (years)
-        df = df.rename(columns={'index': 'Metric'}).set_index('Metric')
-        
-        # 4. Clean column names (e.g., 'Mar. 23' -> '2023')
+        # 3. Promote the detected row to be the header
+        new_header = df.iloc[header_row_index]
+        df = df.drop(header_row_index) # Remove the header row from the data
+        df.columns = new_header
+        df = df.rename(columns={df.columns[0]: 'Metric'}) # Ensure the first column is named 'Metric'
+        df = df.set_index('Metric')
+
+        # 4. Clean up the year column names
         renamed_cols = {}
         for col in df.columns:
+            # Extract 4-digit year, or create it from 2 digits
             year_str = ''.join(filter(str.isdigit, str(col)))
-            if len(year_str) >= 2: # Look for '23' or '2023'
-                renamed_cols[col] = "20" + year_str[-2:] if len(year_str) < 4 else year_str
-
-        df = df.rename(columns=renamed_cols)
+            if len(year_str) >= 2:
+                full_year = "20" + year_str[-2:] if len(year_str) < 4 else year_str
+                if 1950 < int(full_year) < 2050: # Sanity check
+                    renamed_cols[col] = full_year
         
-        # 5. Filter to keep only columns that look like years and sort them
-        year_columns = sorted([col for col in df.columns if col.isdigit() and len(col) == 4], reverse=True)
+        df = df.rename(columns=renamed_cols)
+
+        # 5. Filter to keep only valid year columns and sort them
+        year_columns = sorted([col for col in df.columns if str(col).isdigit() and len(str(col)) == 4], reverse=True)
         if not year_columns:
-            st.error("Could not find year columns in the file's header after parsing.")
+            st.error("No valid 4-digit year columns were found after cleaning.")
             return None
         
         df_final = df[year_columns].apply(pd.to_numeric, errors='coerce')
+        # Drop rows that are entirely empty after conversion
+        df_final = df_final.dropna(how='all')
         
         st.success("File parsed successfully!")
         return {"capitaline_statement": df_final}
 
     except Exception as e:
-        st.error(f"Error parsing the file: {e}")
-        st.warning("Please ensure the uploaded file is the unmodified export from Capitaline.")
+        st.error(f"An unexpected error occurred during parsing: {e}")
+        st.warning("If the issue persists, the file's HTML structure may be unusual.")
         return None
 
-
 # The DashboardUI class and its methods remain the same as the previous version.
-# The only change needed was in the parsing function above.
 class DashboardUI:
     """The main class for the Streamlit user interface."""
 
