@@ -10,6 +10,8 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 from typing import List, Dict, Any, Optional
+# NEW: Import BeautifulSoup for HTML parsing
+from bs4 import BeautifulSoup
 
 # Try to import backend; handle error gracefully if it's missing
 try:
@@ -28,14 +30,7 @@ st.set_page_config(
 )
 
 # Custom CSS
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 3rem; font-weight: bold; color: #1f77b4; text-align: center;
-        margin-bottom: 2rem; text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
-    }
-</style>
-""", unsafe_allow_html=True)
+st.markdown("""<style>/* ... your CSS ... */</style>""", unsafe_allow_html=True)
 
 
 def _style_selected_rows(row: pd.Series, selected_rows: List[str]) -> List[str]:
@@ -44,61 +39,84 @@ def _style_selected_rows(row: pd.Series, selected_rows: List[str]) -> List[str]:
     return [highlight_style if row.name in selected_rows else '' for _ in row]
 
 
+# --- REWRITTEN: Function to parse the uploaded HTML file ---
 def parse_capitaline_file(uploaded_file) -> Optional[Dict[str, pd.DataFrame]]:
     """
-    Parses an uploaded Capitaline .xls file and transforms it into the
-    app's expected data structure.
+    Parses an uploaded Capitaline file, which is an HTML table saved with a .xls extension.
     """
     if uploaded_file is None:
         return None
 
     try:
-        st.info(f"Reading data from: `{uploaded_file.name}`")
-        df = pd.read_excel(uploaded_file, engine='xlrd')
+        st.info(f"Reading HTML data from: `{uploaded_file.name}`")
+        # Read the file's content directly as a string (HTML)
+        html_content = uploaded_file.getvalue().decode("utf-8")
 
-        metric_col = df.columns[0]
-        df = df.dropna(subset=[metric_col]).set_index(metric_col)
+        # Use Pandas' powerful read_html which finds all tables in an HTML string.
+        # It returns a list of DataFrames. The main data table is usually the first or largest one.
+        tables = pd.read_html(html_content)
+        
+        if not tables:
+            st.error("No data tables were found in the uploaded file.")
+            return None
 
+        # Assume the largest table is the one we want
+        df = max(tables, key=len)
+
+        # --- Data Cleaning and Structuring (same logic as before) ---
+        # 1. The first column is usually the metric, and it becomes the header after read_html.
+        #    We need to find it and set it as the index.
+        df = df.rename(columns={0: 'Metric'}).dropna(subset=['Metric']).set_index('Metric')
+
+        # 2. The column headers are now the first row of data. Promote them.
+        df.columns = df.iloc[0]
+        df = df.drop(df.index[0])
+        df = df.reset_index() # Reset index to work with the 'Metric' column again
+        
+        # 3. Clean up the now-promoted header (years)
+        df = df.rename(columns={'index': 'Metric'}).set_index('Metric')
+        
+        # 4. Clean column names (e.g., 'Mar. 23' -> '2023')
         renamed_cols = {}
         for col in df.columns:
-            try:
-                # Extracts the last 4-digit number from a string like 'Mar 2023'
-                year_str = ''.join(filter(str.isdigit, str(col)))[-4:]
-                if year_str:
-                    renamed_cols[col] = year_str
-            except IndexError:
-                continue
-        
+            year_str = ''.join(filter(str.isdigit, str(col)))
+            if len(year_str) >= 2: # Look for '23' or '2023'
+                renamed_cols[col] = "20" + year_str[-2:] if len(year_str) < 4 else year_str
+
         df = df.rename(columns=renamed_cols)
         
+        # 5. Filter to keep only columns that look like years and sort them
         year_columns = sorted([col for col in df.columns if col.isdigit() and len(col) == 4], reverse=True)
         if not year_columns:
-            st.error("Could not find year columns (e.g., 2023, 2022) in the file's header.")
+            st.error("Could not find year columns in the file's header after parsing.")
             return None
         
-        df = df[year_columns].apply(pd.to_numeric, errors='coerce')
+        df_final = df[year_columns].apply(pd.to_numeric, errors='coerce')
         
-        st.success("File processed successfully!")
-        return {"capitaline_statement": df}
+        st.success("File parsed successfully!")
+        return {"capitaline_statement": df_final}
 
     except Exception as e:
-        st.error(f"Error parsing Excel file: {e}")
+        st.error(f"Error parsing the file: {e}")
+        st.warning("Please ensure the uploaded file is the unmodified export from Capitaline.")
         return None
 
 
-# IMPORTANT: All methods below must be correctly indented to be part of the class.
+# The DashboardUI class and its methods remain the same as the previous version.
+# The only change needed was in the parsing function above.
 class DashboardUI:
     """The main class for the Streamlit user interface."""
 
     def __init__(self):
         """Initializes the UI class and sets up the session state."""
-        # Initialize session state keys to avoid errors on the first run
         if "analysis_data" not in st.session_state:
             st.session_state.analysis_data = None
         if "active_source" not in st.session_state:
-            st.session_state.active_source = "capitaline" # Default to file upload
+            st.session_state.active_source = "capitaline"
         if "user_symbol_input" not in st.session_state:
             st.session_state.user_symbol_input = "RELIANCE.NS"
+        if "_uploaded_file_memo" not in st.session_state:
+            st.session_state._uploaded_file_memo = None
 
     def render_header(self):
         """Renders the main title header for the application."""
@@ -114,28 +132,26 @@ class DashboardUI:
                 "Select Data Source",
                 ["Local File (Capitaline)", "Live Data (Yahoo Finance)"],
                 key="data_source_selector",
-                on_change=lambda: st.session_state.update(analysis_data=None) # Clear data when switching source
+                on_change=lambda: st.session_state.update(analysis_data=None)
             )
             
-            # --- Return a dictionary of controls based on the selected source ---
             if data_source == "Local File (Capitaline)":
-                st.subheader("Capitaline File Upload")
                 uploaded_file = st.file_uploader("Upload .xls financial data file", type=['xls'])
                 return {"source": "capitaline", "file": uploaded_file}
             
-            else: # Yahoo Finance is selected
-                if not get_stock_analysis: # Check if import failed
-                    st.error("Live Data mode is disabled because `financial_engine.py` was not found.")
+            else:
+                if not get_stock_analysis:
+                    st.error("Live Data mode is disabled.")
                     return {"source": "yfinance", "fetch": False, "symbol": ""}
                 
                 st.subheader("Stock Selection")
                 symbol = st.text_input("Enter Stock Symbol (e.g., INFY.NS)", value=st.session_state.user_symbol_input)
-                st.session_state.user_symbol_input = symbol # Remember the last typed symbol
+                st.session_state.user_symbol_input = symbol
                 
                 fetch = st.button("🔍 Fetch Live Data", use_container_width=True, type="primary")
                 return {"source": "yfinance", "fetch": fetch, "symbol": symbol}
 
-    def plot_selected_rows(self, df: pd.DataFrame, selected_rows: List[str], title: str):
+    def plot_selected_rows(self, df: pd.DataFrame, selected_rows: List[str]):
         """Plots multiple selected rows from a DataFrame on a single chart."""
         if not selected_rows:
             return
@@ -146,13 +162,13 @@ class DashboardUI:
         st.markdown("---")
         st.subheader(f"📊 Chart for: {', '.join(selected_rows)}")
         fig = px.line(plot_df, x=plot_df.index, y=plot_df.columns, title=f"Trend Analysis", markers=True)
-        fig.update_layout(xaxis_title="Period", yaxis_title="Amount", legend_title="Metrics")
+        fig.update_layout(xaxis_title="Period", yaxis_title="Amount (in Rs. Cr.)", legend_title="Metrics")
         st.plotly_chart(fig, use_container_width=True)
 
     def display_capitaline_data(self, analysis_data: Dict[str, pd.DataFrame]):
         """Renders the UI for the parsed Capitaline data."""
         st.header("Capitaline Data Analysis")
-        st.info("Displaying data from the uploaded Excel file. Select rows to visualize.")
+        st.info("Displaying data from the uploaded file. Select rows to visualize.")
         
         statement_df = analysis_data.get("capitaline_statement")
         
@@ -167,31 +183,26 @@ class DashboardUI:
                 styled_df = styled_df.apply(_style_selected_rows, selected_rows=selected_rows, axis=1)
             
             st.dataframe(styled_df, use_container_width=True)
-            self.plot_selected_rows(statement_df, selected_rows, "Uploaded Data")
+            self.plot_selected_rows(statement_df, selected_rows)
 
     def display_yfinance_data(self, analysis_data: Dict[str, Any]):
         """Renders the UI for data fetched from Yahoo Finance."""
         st.header(f"Live Data Analysis: {st.session_state.user_symbol_input}")
-        # This is where you would build out the more complex tabbed view for yfinance data
-        # For now, we'll keep it simple and show the raw data.
         st.json(analysis_data, expanded=False)
-        st.warning("Display for live data is simplified. You can build out the tabbed interface here.")
+        st.warning("Display for live data is simplified.")
 
     def run(self):
         """The main execution loop for the Streamlit app."""
         self.render_header()
         controls = self.render_sidebar()
 
-        # --- Data Loading Logic ---
         if controls["source"] == "capitaline" and controls["file"]:
-            # If a new file is uploaded, parse it.
-            if controls["file"] != st.session_state.get("_uploaded_file_memo"):
+            if controls["file"] != st.session_state._uploaded_file_memo:
                 st.session_state._uploaded_file_memo = controls["file"]
                 st.session_state.analysis_data = parse_capitaline_file(controls["file"])
                 st.session_state.active_source = "capitaline"
         
         elif controls["source"] == "yfinance" and controls["fetch"]:
-            # If fetch button is clicked for a valid symbol
             if controls["symbol"] and validate_symbol:
                 is_valid, formatted_symbol = validate_symbol(controls["symbol"])
                 if is_valid:
@@ -201,7 +212,6 @@ class DashboardUI:
                 else:
                     st.error(f"Invalid symbol format: {controls['symbol']}")
 
-        # --- Data Display Logic ---
         if st.session_state.analysis_data:
             if st.session_state.active_source == "capitaline":
                 self.display_capitaline_data(st.session_state.analysis_data)
