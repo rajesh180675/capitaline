@@ -1,8 +1,8 @@
-# /mount/src/capitaline/app.py - FINAL VERSION with Responsive AG-Grid
+# /mount/src/capitaline/app.py - FINAL HIGH-PERFORMANCE VERSION
 
 """
 Frontend Streamlit Dashboard - User Interface for Financial Analysis
-Features interactive row selection for charting using AG-Grid.
+Features a high-performance "Select and Chart" workflow using native components.
 """
 
 import streamlit as st
@@ -12,19 +12,28 @@ import plotly.express as px
 from typing import List, Dict, Any, Optional
 import io
 
-# Import the AG-Grid component
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
-
 # Configure Streamlit page
 st.set_page_config(
-    page_title="Interactive Financial Dashboard",
-    page_icon="📊",
+    page_title="High-Performance Financial Dashboard",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # Custom CSS
-st.markdown("""<style> .main-header { font-size: 2.5rem; font-weight: bold; color: #1f77b4; text-align: center; margin-bottom: 1rem; } </style>""", unsafe_allow_html=True)
+st.markdown("""
+<style>
+    .main-header { font-size: 2.5rem; font-weight: bold; color: #1f77b4; text-align: center; margin-bottom: 1rem; }
+    /* Style the primary button to be more prominent */
+    .stButton>button {
+        background-color: #1f77b4;
+        color: white;
+        border-radius: 5px;
+        border: none;
+        padding: 10px 24px;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 
 def parse_capitaline_file(uploaded_file) -> Optional[Dict[str, Any]]:
@@ -82,10 +91,13 @@ class DashboardUI:
             st.session_state.analysis_data = None
         if "_uploaded_file_memo" not in st.session_state:
             st.session_state._uploaded_file_memo = None
+        # NEW: State to hold the generated chart figure
+        if "chart_figure" not in st.session_state:
+            st.session_state.chart_figure = None
 
     def render_header(self):
         """Renders the main title header for the application."""
-        st.markdown('<div class="main-header">📊 Interactive Financial Dashboard</div>', unsafe_allow_html=True)
+        st.markdown('<div class="main-header">⚡ High-Performance Financial Dashboard</div>', unsafe_allow_html=True)
         st.markdown("---")
 
     def render_sidebar(self):
@@ -96,89 +108,75 @@ class DashboardUI:
             uploaded_file = st.file_uploader("Upload financial data file", type=['xls'])
             return {"file": uploaded_file}
 
-    def plot_selected_rows(self, df: pd.DataFrame, selected_rows: List[Dict], chart_type: str):
-        """Plots multiple selected rows from a DataFrame on a single chart."""
-        if not selected_rows:
-            # Display a placeholder message when no rows are selected
-            st.info("Select one or more rows from the table above to generate a chart.")
-            return
+    def generate_chart(self, df: pd.DataFrame, selected_metrics: List[str], chart_type: str):
+        """Generates and returns a Plotly figure object."""
+        if not selected_metrics:
+            return None
 
-        selected_metrics = [row['Metric'] for row in selected_rows]
-        
         plot_df = df.loc[selected_metrics].dropna(axis=1, how='all').T
         plot_df.index = plot_df.index.astype(str)
 
-        st.markdown("---")
-        st.subheader(f"Visual Analysis for: {', '.join(selected_metrics)}")
-
+        title = f"Analysis for: {', '.join(selected_metrics)}"
+        
         if chart_type == 'Bar Chart':
-            fig = px.bar(plot_df, x=plot_df.index, y=plot_df.columns, title="Comparison by Year", barmode='group')
+            fig = px.bar(plot_df, x=plot_df.index, y=plot_df.columns, title=title, barmode='group')
         else:
-            fig = px.line(plot_df, x=plot_df.index, y=plot_df.columns, title="Trend Analysis", markers=True)
+            fig = px.line(plot_df, x=plot_df.index, y=plot_df.columns, title=title, markers=True)
 
         fig.update_layout(xaxis_title="Year", yaxis_title="Amount (in Rs. Cr.)", legend_title="Metrics")
-        st.plotly_chart(fig, use_container_width=True)
+        return fig
 
+    # --- REWRITTEN: This function now uses the high-performance st.data_editor ---
     def display_capitaline_data(self, analysis_data: Dict[str, Any]):
-        """Renders the UI for the parsed Capitaline data using an interactive AG-Grid."""
+        """Renders the UI for the parsed Capitaline data using st.data_editor."""
         company_name = analysis_data.get("company_name", "Uploaded Data")
         statement_df = analysis_data.get("statement")
         
         st.header(f"Analysis for: {company_name}")
-        st.info("Click on rows in the table below to select them for charting. Use Ctrl/Cmd or Shift to select multiple rows.")
+        st.info("Use the checkboxes to select rows, then click the 'Generate Chart' button.")
         
         if statement_df is not None and not statement_df.empty:
+            # Prepare DataFrame for the data editor
+            df_to_edit = statement_df.reset_index()
             
-            grid_df = statement_df.reset_index()
-
-            # --- AG-Grid Configuration ---
-            gb = GridOptionsBuilder.from_dataframe(grid_df)
-            
-            gb.configure_column("Metric", headerName="Financial Metric", width=300, pinned='left', sortable=True)
-            
-            gb.configure_selection(
-                'multiple',
-                use_checkbox=True,
-                rowMultiSelectWithClick=True, # Allows Ctrl/Cmd+Click selection
+            # --- Display the Data Editor ---
+            edited_df = st.data_editor(
+                df_to_edit,
+                key="data_editor",
+                # Add a column configuration to make the 'Metric' column wider
+                column_config={"Metric": st.column_config.TextColumn(width="large")},
+                # Disable editing for all columns except the selection
+                disabled=df_to_edit.columns, 
+                hide_index=True
             )
             
-            # Format numeric columns
-            for col in statement_df.columns:
-                gb.configure_column(col, type=["numericColumn", "numberColumnFilter", "customNumericFormat"], precision=2)
+            # Find which rows were selected by the user
+            selected_rows = edited_df[edited_df.select == True]["Metric"].tolist()
 
-            gridOptions = gb.build()
-
-            # --- Display the Grid with CORRECTED update modes ---
-            grid_response = AgGrid(
-                grid_df,
-                gridOptions=gridOptions,
-                height=400,
-                width='100%',
-                # CRITICAL FIX: These modes ensure the app reruns on selection change
-                update_mode=GridUpdateMode.SELECTION_CHANGED,
-                data_return_mode=DataReturnMode.AS_INPUT,
-                # ---
-                fit_columns_on_grid_load=False, # Better to set column widths manually
-                allow_unsafe_jscode=True,
-                enable_enterprise_modules=False,
-                key='financial_grid' # Add a key for stability
-            )
-
-            # --- Capture Selected Data and Controls ---
-            selected_rows = grid_response['selected_rows']
+            st.markdown("---")
             
-            # The chart type radio buttons only appear AFTER a selection is made
+            # --- Charting Controls ---
             if selected_rows:
-                chart_type = st.radio(
-                    "Select Chart Type:",
-                    ["Line Chart", "Bar Chart"],
-                    key="chart_type_selector",
-                    horizontal=True
-                )
-                self.plot_selected_rows(statement_df, selected_rows, chart_type)
+                col1, col2 = st.columns([1, 3])
+                with col1:
+                    chart_type = st.radio("Select Chart Type", ["Line Chart", "Bar Chart"], horizontal=True)
+                with col2:
+                    # The button that triggers the chart generation
+                    if st.button("📊 Generate Chart", type="primary", use_container_width=True):
+                        # Generate the figure and store it in session state
+                        fig = self.generate_chart(statement_df, selected_rows, chart_type)
+                        st.session_state.chart_figure = fig
             else:
-                # Call the plot function with empty selection to show the placeholder message
-                self.plot_selected_rows(statement_df, [], "Line Chart")
+                # Clear the previous chart if no rows are selected
+                st.session_state.chart_figure = None
+
+        # --- Display the Chart ---
+        # The chart is displayed here, outside the button's "if" block.
+        # This ensures it persists across reruns until a new chart is generated.
+        if st.session_state.chart_figure:
+            st.plotly_chart(st.session_state.chart_figure, use_container_width=True)
+        elif selected_rows:
+            st.info("Click the 'Generate Chart' button to visualize your selection.")
 
     def run(self):
         """The main execution loop for the Streamlit app."""
@@ -186,10 +184,12 @@ class DashboardUI:
         controls = self.render_sidebar()
 
         if controls["file"]:
-            if controls["file"] != st.session_state.get("_uploaded_file_memo"):
+            if controls["file"] != st.session_state._uploaded_file_memo:
                 with st.spinner("Processing file..."):
                     st.session_state._uploaded_file_memo = controls["file"]
                     st.session_state.analysis_data = parse_capitaline_file(controls["file"])
+                    # Clear old chart when a new file is uploaded
+                    st.session_state.chart_figure = None
         
         if st.session_state.analysis_data:
             self.display_capitaline_data(st.session_state.analysis_data)
