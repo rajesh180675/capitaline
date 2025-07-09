@@ -1,8 +1,8 @@
-# /mount/src/capitaline/app.py - FINAL VERSION with Flexible Charting
+# /mount/src/capitaline/app.py - FINAL VERSION with AG-Grid Interactivity
 
 """
 Frontend Streamlit Dashboard - User Interface for Financial Analysis
-Supports local file analysis from Capitaline exports with flexible chart types.
+Features interactive row selection for charting using AG-Grid.
 """
 
 import streamlit as st
@@ -12,22 +12,19 @@ import plotly.express as px
 from typing import List, Dict, Any, Optional
 import io # Used to read the file content
 
+# NEW: Import the AG-Grid component
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
+
 # Configure Streamlit page
 st.set_page_config(
-    page_title="Advanced Financial Dashboard",
-    page_icon="📈",
+    page_title="Interactive Financial Dashboard",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # Custom CSS
 st.markdown("""<style> .main-header { font-size: 2.5rem; font-weight: bold; color: #1f77b4; text-align: center; margin-bottom: 1rem; } </style>""", unsafe_allow_html=True)
-
-
-def _style_selected_rows(row: pd.Series, selected_rows: List[str]) -> List[str]:
-    """Helper function to apply background style to selected DataFrame rows."""
-    highlight_style = 'background-color: #ffeaa7'
-    return [highlight_style if row.name in selected_rows else '' for _ in row]
 
 
 def parse_capitaline_file(uploaded_file) -> Optional[Dict[str, Any]]:
@@ -88,7 +85,7 @@ class DashboardUI:
 
     def render_header(self):
         """Renders the main title header for the application."""
-        st.markdown('<div class="main-header">📈 Financial Analysis Dashboard</div>', unsafe_allow_html=True)
+        st.markdown('<div class="main-header">📊 Interactive Financial Dashboard</div>', unsafe_allow_html=True)
         st.markdown("---")
 
     def render_sidebar(self):
@@ -99,68 +96,86 @@ class DashboardUI:
             uploaded_file = st.file_uploader("Upload financial data file", type=['xls'])
             return {"file": uploaded_file}
 
-    # --- UPDATED: This function now accepts a chart_type argument ---
-    def plot_selected_rows(self, df: pd.DataFrame, selected_rows: List[str], chart_type: str):
+    def plot_selected_rows(self, df: pd.DataFrame, selected_rows: List[Dict], chart_type: str):
         """Plots multiple selected rows from a DataFrame on a single chart."""
         if not selected_rows:
             return
 
-        plot_df = df.loc[selected_rows].dropna(axis=1, how='all').T
+        # Extract the metric names from the list of selected row dictionaries
+        selected_metrics = [row['Metric'] for row in selected_rows]
+        
+        plot_df = df.loc[selected_metrics].dropna(axis=1, how='all').T
         plot_df.index = plot_df.index.astype(str)
 
         st.markdown("---")
-        st.subheader(f"📊 Chart for: {', '.join(selected_rows)}")
+        st.subheader(f"Visual Analysis for: {', '.join(selected_metrics)}")
 
-        # --- NEW: Conditional logic to create the selected chart type ---
         if chart_type == 'Bar Chart':
-            # Bar charts are best for comparing values across categories (or years)
             fig = px.bar(plot_df, x=plot_df.index, y=plot_df.columns, title="Comparison by Year", barmode='group')
         else: # Default to Line Chart
-            # Line charts are best for showing trends over time
             fig = px.line(plot_df, x=plot_df.index, y=plot_df.columns, title="Trend Analysis", markers=True)
 
         fig.update_layout(xaxis_title="Year", yaxis_title="Amount (in Rs. Cr.)", legend_title="Metrics")
         st.plotly_chart(fig, use_container_width=True)
 
-    # --- UPDATED: This function now includes the chart type selector ---
+    # --- REWRITTEN: This function now uses AG-Grid instead of st.dataframe ---
     def display_capitaline_data(self, analysis_data: Dict[str, Any]):
-        """Renders the UI for the parsed Capitaline data."""
+        """Renders the UI for the parsed Capitaline data using an interactive AG-Grid."""
         company_name = analysis_data.get("company_name", "Uploaded Data")
         statement_df = analysis_data.get("statement")
         
         st.header(f"Analysis for: {company_name}")
-        st.info("Select one or more rows from the table below to visualize their trends.")
+        st.info("Click on rows in the table below to select them for charting. Use Ctrl/Cmd to select multiple rows.")
         
         if statement_df is not None and not statement_df.empty:
             
-            # Use columns for a cleaner layout
-            col1, col2 = st.columns([3, 1]) # Give more space to the multiselect
+            # Reset index to make the 'Metric' column available for selection
+            grid_df = statement_df.reset_index()
 
-            with col1:
-                selected_rows = st.multiselect(
-                    "Select metrics to chart:",
-                    options=statement_df.index.tolist(),
-                    key="capitaline_multiselect",
-                    label_visibility="collapsed" # Hide the label as we have a header
-                )
+            # --- AG-Grid Configuration ---
+            gb = GridOptionsBuilder.from_dataframe(grid_df)
             
-            with col2:
-                # --- NEW: Chart type selector ---
-                chart_type = st.radio(
+            # Configure the 'Metric' column to be wider and pinned
+            gb.configure_column("Metric", headerName="Financial Metric", width=250, pinned='left')
+            
+            # Configure selection
+            gb.configure_selection(
+                'multiple',
+                use_checkbox=True,
+                groupSelectsChildren=True,
+                header_checkbox=True
+            )
+            
+            # Make other columns editable if needed, or set other properties
+            gb.configure_grid_options(domLayout='normal')
+            gridOptions = gb.build()
+
+            # --- Display the Grid ---
+            grid_response = AgGrid(
+                grid_df,
+                gridOptions=gridOptions,
+                height=400,
+                width='100%',
+                data_return_mode=DataReturnMode.AS_INPUT,
+                update_mode=GridUpdateMode.MODEL_CHANGED,
+                fit_columns_on_grid_load=True,
+                allow_unsafe_jscode=True, # Set it to True to allow jsfunction to be injected
+                enable_enterprise_modules=False # Disable enterprise features
+            )
+
+            # --- Capture Selected Data and Controls ---
+            selected_rows = grid_response['selected_rows']
+            
+            chart_type = "Line Chart" # Default
+            if selected_rows:
+                 chart_type = st.radio(
                     "Select Chart Type:",
                     ["Line Chart", "Bar Chart"],
                     key="chart_type_selector",
-                    horizontal=True,
-                    label_visibility="collapsed"
+                    horizontal=True
                 )
-
-            styled_df = statement_df.style.format("{:,.2f}", na_rep="-")
-            if selected_rows:
-                styled_df = styled_df.apply(_style_selected_rows, selected_rows=selected_rows, axis=1)
             
-            st.dataframe(styled_df, use_container_width=True)
-            
-            # Pass the user's choice to the plotting function
+            # Pass the selected data to the plotting function
             self.plot_selected_rows(statement_df, selected_rows, chart_type)
 
     def run(self):
@@ -169,7 +184,6 @@ class DashboardUI:
         controls = self.render_sidebar()
 
         if controls["file"]:
-            # Re-parse only if a new file is uploaded
             if controls["file"] != st.session_state._uploaded_file_memo:
                 with st.spinner("Processing file..."):
                     st.session_state._uploaded_file_memo = controls["file"]
