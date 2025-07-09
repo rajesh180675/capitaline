@@ -1,4 +1,4 @@
-# /mount/src/capitaline/app.py - FINAL VERSION with AG-Grid Interactivity
+# /mount/src/capitaline/app.py - FINAL VERSION with Responsive AG-Grid
 
 """
 Frontend Streamlit Dashboard - User Interface for Financial Analysis
@@ -10,9 +10,9 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 from typing import List, Dict, Any, Optional
-import io # Used to read the file content
+import io
 
-# NEW: Import the AG-Grid component
+# Import the AG-Grid component
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 
 # Configure Streamlit page
@@ -99,9 +99,10 @@ class DashboardUI:
     def plot_selected_rows(self, df: pd.DataFrame, selected_rows: List[Dict], chart_type: str):
         """Plots multiple selected rows from a DataFrame on a single chart."""
         if not selected_rows:
+            # Display a placeholder message when no rows are selected
+            st.info("Select one or more rows from the table above to generate a chart.")
             return
 
-        # Extract the metric names from the list of selected row dictionaries
         selected_metrics = [row['Metric'] for row in selected_rows]
         
         plot_df = df.loc[selected_metrics].dropna(axis=1, how='all').T
@@ -112,71 +113,72 @@ class DashboardUI:
 
         if chart_type == 'Bar Chart':
             fig = px.bar(plot_df, x=plot_df.index, y=plot_df.columns, title="Comparison by Year", barmode='group')
-        else: # Default to Line Chart
+        else:
             fig = px.line(plot_df, x=plot_df.index, y=plot_df.columns, title="Trend Analysis", markers=True)
 
         fig.update_layout(xaxis_title="Year", yaxis_title="Amount (in Rs. Cr.)", legend_title="Metrics")
         st.plotly_chart(fig, use_container_width=True)
 
-    # --- REWRITTEN: This function now uses AG-Grid instead of st.dataframe ---
     def display_capitaline_data(self, analysis_data: Dict[str, Any]):
         """Renders the UI for the parsed Capitaline data using an interactive AG-Grid."""
         company_name = analysis_data.get("company_name", "Uploaded Data")
         statement_df = analysis_data.get("statement")
         
         st.header(f"Analysis for: {company_name}")
-        st.info("Click on rows in the table below to select them for charting. Use Ctrl/Cmd to select multiple rows.")
+        st.info("Click on rows in the table below to select them for charting. Use Ctrl/Cmd or Shift to select multiple rows.")
         
         if statement_df is not None and not statement_df.empty:
             
-            # Reset index to make the 'Metric' column available for selection
             grid_df = statement_df.reset_index()
 
             # --- AG-Grid Configuration ---
             gb = GridOptionsBuilder.from_dataframe(grid_df)
             
-            # Configure the 'Metric' column to be wider and pinned
-            gb.configure_column("Metric", headerName="Financial Metric", width=250, pinned='left')
+            gb.configure_column("Metric", headerName="Financial Metric", width=300, pinned='left', sortable=True)
             
-            # Configure selection
             gb.configure_selection(
                 'multiple',
                 use_checkbox=True,
-                groupSelectsChildren=True,
-                header_checkbox=True
+                rowMultiSelectWithClick=True, # Allows Ctrl/Cmd+Click selection
             )
             
-            # Make other columns editable if needed, or set other properties
-            gb.configure_grid_options(domLayout='normal')
+            # Format numeric columns
+            for col in statement_df.columns:
+                gb.configure_column(col, type=["numericColumn", "numberColumnFilter", "customNumericFormat"], precision=2)
+
             gridOptions = gb.build()
 
-            # --- Display the Grid ---
+            # --- Display the Grid with CORRECTED update modes ---
             grid_response = AgGrid(
                 grid_df,
                 gridOptions=gridOptions,
                 height=400,
                 width='100%',
+                # CRITICAL FIX: These modes ensure the app reruns on selection change
+                update_mode=GridUpdateMode.SELECTION_CHANGED,
                 data_return_mode=DataReturnMode.AS_INPUT,
-                update_mode=GridUpdateMode.MODEL_CHANGED,
-                fit_columns_on_grid_load=True,
-                allow_unsafe_jscode=True, # Set it to True to allow jsfunction to be injected
-                enable_enterprise_modules=False # Disable enterprise features
+                # ---
+                fit_columns_on_grid_load=False, # Better to set column widths manually
+                allow_unsafe_jscode=True,
+                enable_enterprise_modules=False,
+                key='financial_grid' # Add a key for stability
             )
 
             # --- Capture Selected Data and Controls ---
             selected_rows = grid_response['selected_rows']
             
-            chart_type = "Line Chart" # Default
+            # The chart type radio buttons only appear AFTER a selection is made
             if selected_rows:
-                 chart_type = st.radio(
+                chart_type = st.radio(
                     "Select Chart Type:",
                     ["Line Chart", "Bar Chart"],
                     key="chart_type_selector",
                     horizontal=True
                 )
-            
-            # Pass the selected data to the plotting function
-            self.plot_selected_rows(statement_df, selected_rows, chart_type)
+                self.plot_selected_rows(statement_df, selected_rows, chart_type)
+            else:
+                # Call the plot function with empty selection to show the placeholder message
+                self.plot_selected_rows(statement_df, [], "Line Chart")
 
     def run(self):
         """The main execution loop for the Streamlit app."""
@@ -184,7 +186,7 @@ class DashboardUI:
         controls = self.render_sidebar()
 
         if controls["file"]:
-            if controls["file"] != st.session_state._uploaded_file_memo:
+            if controls["file"] != st.session_state.get("_uploaded_file_memo"):
                 with st.spinner("Processing file..."):
                     st.session_state._uploaded_file_memo = controls["file"]
                     st.session_state.analysis_data = parse_capitaline_file(controls["file"])
